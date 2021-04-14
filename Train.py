@@ -62,6 +62,7 @@ def test(model, test_loader):
 
 def train(train_loader, model, optimizer, epoch, test_set):
     model.train()
+    best = 0
     # ---- multi-scale training ----
     size_rates = [0.75, 1, 1.25]
     loss_record2, loss_record3, loss_record4, loss_record5 = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
@@ -103,13 +104,11 @@ def train(train_loader, model, optimizer, epoch, test_set):
     save_path = 'snapshots/{}/'.format(opt.train_save)
     os.makedirs(save_path, exist_ok=True)
     
-    best = 0
-    if (epoch+1) % 1 == 0:
-        meandice = test(model,test_path)
-        if meandice > best:
-            best = meandice
-            torch.save(model.state_dict(), save_path + 'HarD-MSEG-best.pth' )
-            print('[Saving Snapshot:]', save_path + 'HarD-MSEG-best.pth',meandice)
+    meandice = test(model,test_set)
+    if meandice > best:
+        best = meandice
+        torch.save(model.state_dict(), save_path + str(meandice) + '_HarD-MSEG-best.pth' )
+        print('[Saving Snapshot:]', save_path + 'HarD-MSEG-best.pth',meandice)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
