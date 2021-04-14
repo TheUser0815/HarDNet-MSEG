@@ -1,154 +1,290 @@
 import os
-from PIL import Image
+from PIL import Image, ImageOps
 import torch.utils.data as data
 import torchvision.transforms as transforms
 import numpy as np
 import random
 import torch
+import os
 
 
-class PolypDataset(data.Dataset):
-    """
-    dataloader for polyp segmentation tasks
-    """
-    def __init__(self, image_root, gt_root, trainsize, augmentations):
-        self.trainsize = trainsize
-        self.augmentations = augmentations
-        print(self.augmentations)
-        self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg') or f.endswith('.png')]
-        self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.png')]
-        self.images = sorted(self.images)
-        self.gts = sorted(self.gts)
-        self.filter_files()
-        self.size = len(self.images)
-        if self.augmentations == 'True':
-            print('Using RandomRotation, RandomFlip')
-            self.img_transform = transforms.Compose([
-                transforms.RandomRotation(90, resample=False, expand=False, center=None, fill=None),
-                transforms.RandomVerticalFlip(p=0.5),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.Resize((self.trainsize, self.trainsize)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406],
-                                     [0.229, 0.224, 0.225])])
-            self.gt_transform = transforms.Compose([
-                transforms.RandomRotation(90, resample=False, expand=False, center=None, fill=None),
-                transforms.RandomVerticalFlip(p=0.5),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.Resize((self.trainsize, self.trainsize)),
-                transforms.ToTensor()])
-            
-        else:
-            print('no augmentation')
-            self.img_transform = transforms.Compose([
-                transforms.Resize((self.trainsize, self.trainsize)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406],
-                                     [0.229, 0.224, 0.225])])
-            
-            self.gt_transform = transforms.Compose([
-                transforms.Resize((self.trainsize, self.trainsize)),
-                transforms.ToTensor()])
-            
+def get_loader(dataset, batch_size, shuffle=True, num_workers=4, pin_memory=True):
 
-    def __getitem__(self, index):
-        
-        image = self.rgb_loader(self.images[index])
-        gt = self.binary_loader(self.gts[index])
-        
-        seed = np.random.randint(2147483647) # make a seed with numpy generator 
-        random.seed(seed) # apply this seed to img tranfsorms
-        torch.manual_seed(seed) # needed for torchvision 0.7
-        if self.img_transform is not None:
-            image = self.img_transform(image)
-            
-        random.seed(seed) # apply this seed to img tranfsorms
-        torch.manual_seed(seed) # needed for torchvision 0.7
-        if self.gt_transform is not None:
-            gt = self.gt_transform(gt)
-        return image, gt
-
-    def filter_files(self):
-        assert len(self.images) == len(self.gts)
-        images = []
-        gts = []
-        for img_path, gt_path in zip(self.images, self.gts):
-            img = Image.open(img_path)
-            gt = Image.open(gt_path)
-            if img.size == gt.size:
-                images.append(img_path)
-                gts.append(gt_path)
-        self.images = images
-        self.gts = gts
-
-    def rgb_loader(self, path):
-        with open(path, 'rb') as f:
-            img = Image.open(f)
-            return img.convert('RGB')
-
-    def binary_loader(self, path):
-        with open(path, 'rb') as f:
-            img = Image.open(f)
-            # return img.convert('1')
-            return img.convert('L')
-
-    def resize(self, img, gt):
-        assert img.size == gt.size
-        w, h = img.size
-        if h < self.trainsize or w < self.trainsize:
-            h = max(h, self.trainsize)
-            w = max(w, self.trainsize)
-            return img.resize((w, h), Image.BILINEAR), gt.resize((w, h), Image.NEAREST)
-        else:
-            return img, gt
-
-    def __len__(self):
-        return self.size
-
-
-def get_loader(image_root, gt_root, batchsize, trainsize, shuffle=True, num_workers=4, pin_memory=True, augmentation=False):
-
-    dataset = PolypDataset(image_root, gt_root, trainsize, augmentation)
     data_loader = data.DataLoader(dataset=dataset,
-                                  batch_size=batchsize,
+                                  batch_size=batch_size,
                                   shuffle=shuffle,
                                   num_workers=num_workers,
                                   pin_memory=pin_memory)
     return data_loader
 
 
-class test_dataset:
-    def __init__(self, image_root, gt_root, testsize):
-        self.testsize = testsize
-        self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg') or f.endswith('.png')]
-        self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.tif') or f.endswith('.png')]
-        self.images = sorted(self.images)
-        self.gts = sorted(self.gts)
-        self.transform = transforms.Compose([
-            transforms.Resize((self.testsize, self.testsize)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])])
-        self.gt_transform = transforms.ToTensor()
-        self.size = len(self.images)
-        self.index = 0
 
-    def load_data(self):
-        image = self.rgb_loader(self.images[self.index])
-        image = self.transform(image).unsqueeze(0)
-        gt = self.binary_loader(self.gts[self.index])
-        name = self.images[self.index].split('/')[-1]
-        if name.endswith('.jpg'):
-            name = name.split('.jpg')[0] + '.png'
-        self.index += 1
-        return image, gt, name
+class FileCollector:
+    def __init__(self, base_dir):
+        self.base_dir = base_dir
+        self.images = []
+
+    def add_data(self, img_dir, mask_dir, subdirs = True):
+        self.__collect_image_names(img_dir, mask_dir, subdirs = subdirs)
+        self.size = len(self.images)
+
+    def __collect_image_names(self, img_path, mask_path, current = "", subdirs = True):
+        path, folders, files=next(os.walk(os.path.join(self.base_dir, img_path, current)))
+
+        #collect images in style (img_path, mask_path, file_path)
+        for image in files:
+            self.images.append((img_path, mask_path, os.path.join(current, image)))
+
+        #traverse subfolders if requested
+        if subdirs:
+            for folder in folders:
+                self.__collect_image_names(img_path, mask_path, os.path.join(current, folder), subdirs)
+
+
+
+class ImageLoader:
+    def binary_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('L')
 
     def rgb_loader(self, path):
         with open(path, 'rb') as f:
             img = Image.open(f)
             return img.convert('RGB')
 
-    def binary_loader(self, path):
-        with open(path, 'rb') as f:
-            img = Image.open(f)
-            return img.convert('L')
+
+
+class DSet(data.Dataset, FileCollector, ImageLoader):
+    def __init__(self, base_dir, img_size, class_channels, channel_wise_mask):
+        FileCollector.__init__(self, base_dir)
+        ImageLoader.__init__(self)
+        self.img_size = img_size
+        self.channel_wise_mask = channel_wise_mask
+        self.class_channels = class_channels
+
+        if class_channels > 2:
+            self.mask_loader = self.__get_multichannel_mask()
+        elif class_channels == 2:
+            self.mask_loader = self.__get_dualchannel_mask()
+        else:
+            self.mask_loader = self.__get_monochannel_mask()
+
+    def __get_multichannel_mask(self):
+        if self.channel_wise_mask:
+            def get_mask(img_data, seed):
+                gt = []
+                for i in range(self.class_channels):
+                    gti = self.binary_loader(os.path.join(self.base_dir, img_data[1], str(i), img_data[2]))
+                    gti = self.mask_transformer(gti, seed)
+                    gt.append(gti)
+                gt = torch.stack(gt, 1)[0]
+                return gt
+        else:
+            def get_mask(img_data, seed):
+                gt = self.binary_loader(os.path.join(self.base_dir, img_data[1], str(0), img_data[2]))
+                gt = self.mask_transformer(gt, seed)[0]
+                for i in range(1, self.class_channels):
+                    gti = self.binary_loader(os.path.join(self.base_dir, img_data[1], str(i), img_data[2]))
+                    gti = self.mask_transformer(gti, seed)[0]
+                    gt = torch.round(gt)
+                    gti *= i
+                    gt += gti
+                return gt
+
+        return get_mask
+
+    def __get_dualchannel_mask(self):
+        get_mono_mask = self.__get_monochannel_mask()
+        if self.channel_wise_mask:
+            def get_mask(img_data, seed):
+                mono = get_mono_mask(img_data, seed)
+                second_ch = 1. - mono
+                return torch.stack([mono, second_ch], 1)[0]
+        else:
+            get_mask = get_mono_mask
+
+        return get_mask
+
+    def __get_monochannel_mask(self):
+        if self.channel_wise_mask:
+            def get_mask(img_data, seed):
+                gt = self.binary_loader(os.path.join(self.base_dir, img_data[1], img_data[2]))
+                gt = self.mask_transformer(gt, seed)
+                return gt
+        else:
+            def get_mask(img_data, seed):
+                gt = self.binary_loader(os.path.join(self.base_dir, img_data[1], img_data[2]))
+                gt = self.mask_transformer(gt, seed)[0]
+                return gt
+            
+        return get_mask
+
+    def getitem(self, index):
+        img_data = self.images[index]
+
+        seed = np.random.randint(2147483647) # make a seed with numpy generator 
+        
+        image = self.image_loader(os.path.join(self.base_dir, img_data[0], img_data[2]))
+        image = self.transformer(image, seed)
+
+        mask = self.mask_loader(img_data, seed)
+
+        return image, mask
+
+    def __getitem__(self, index):
+        return self.getitem(index)
+
+    def __len__(self):
+        return self.size
+
+    def copy(self):
+        cpy = DSet(self.base_dir, self.img_size, self.class_channels, self.channel_wise_mask)
+        cpy.image_loader = self.image_loader
+        cpy.images = self.images
+        cpy.size = self.size
+        cpy.mask_transformer = self.mask_transformer
+        cpy.transformer = self.transformer
+        return cpy
+
+    def split_dset(self, val_percentage):
+        val_count = int(len(self.images) * val_percentage)
+        np.random.shuffle(self.images)
+
+        val_set = self.copy()
+        val_set.images = self.images[:val_count]
+        val_set.size = len(val_set.images)
+
+        self.images = self.images[val_count:]
+        self.size = len(self.images)
+
+        return self, val_set
+
+
+
+class TrainDataset(DSet):
+    def __init__(self, base_dir, img_size, augmentations, class_channels, channel_wise_mask):
+        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
+
+        if augmentations:
+            print('Using RandomRotation, RandomFlip')
+            self.transform = transforms.Compose([
+                transforms.RandomRotation(90, resample=False, expand=False, center=None, fill=None),
+                transforms.RandomVerticalFlip(p=0.5),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.Resize((self.img_size, self.img_size)),
+                transforms.ToTensor()])
+            def transformer(x, seed):
+                random.seed(seed) # apply this seed to img tranfsorms
+                torch.manual_seed(seed) # needed for torchvision 0.7
+                return self.transform(x)
+            self.transformer = transformer
+        else:
+            print('no augmentation')
+            self.transform = transforms.Compose([
+                transforms.Resize((self.img_size, self.img_size)),
+                transforms.ToTensor()])
+            self.transformer = lambda x, seed: self.transform(x)
+        
+        self.mask_transformer = self.transformer
+
+
+class MonochromeDataset(TrainDataset):
+    def __init__(self, base_dir, img_size, augmentations=True, class_channels=1, channel_wise_mask=True):
+        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask)
+        self.image_loader = super().binary_loader
+
+    def __getitem__(self, index):
+        return super().getitem(index)
+
+    def __len__(self):
+        return self.size
+    
+
+class PolychromeDataset(TrainDataset):
+    def __init__(self, base_dir, img_size, augmentations=True, class_channels=1, channel_wise_mask=True):
+        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask)
+        self.image_loader = super().rgb_loader
+
+    def __getitem__(self, index):
+        return super().getitem(index)
+
+    def __len__(self):
+        return self.size
+
+
+
+class TestDataset(DSet):
+    def __init__(self, base_dir, img_size, class_channels, channel_wise_mask):
+        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
+        
+        self.transform = transforms.Compose([
+            transforms.Resize((self.img_size, self.img_size)),
+            transforms.ToTensor()])
+
+        self.transformer = lambda x, seed: self.transform(x)
+
+        self.mask_transform = transforms.ToTensor()
+
+        self.mask_transformer = lambda x, seed: self.mask_transform(x)
+
+        self.re_init()
+
+    def re_init(self):
+        self.size = len(self.images)
+        self.index = 0
+        np.random.shuffle(self.images)
+
+    def indexed_next(self, index):
+        img_data = self.images[self.index]
+
+        image, mask = super().getitem(self.index)
+
+        name = os.path.join(img_data[0], img_data[2]).replace("/", "_")
+
+        return image, mask, name
+
+    def next(self):
+        image, mask, name = self.indexed_next(self.index)
+
+        self.index += 1
+
+        return image, mask, name
+
+
+class MonochromeTestDataset(TestDataset):
+    def __init__(self, base_dir, img_size, class_channels=1, channel_wise_mask=True):
+        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
+        self.image_loader = super().binary_loader
+
+    def __next__(self):
+        return super().next()
+
+    def __iter__(self):
+        self.re_init()
+        return self
+
+    def __getitem__(self, index):
+        return super().indexed_next(index)
+
+    def __len__(self):
+        return self.size
+
+
+class PolychromeTestDataset(TestDataset):
+    def __init__(self, base_dir, img_size, class_channels=1, channel_wise_mask=True):
+        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
+        self.image_loader = super().rgb_loader
+
+    def __next__(self):
+        return super().next()
+
+    def __iter__(self):
+        self.re_init()
+        return self
+
+    def __getitem__(self, index):
+        return super().indexed_next(index)
+
+    def __len__(self):
+        return self.size
