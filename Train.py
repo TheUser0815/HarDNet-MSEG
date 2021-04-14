@@ -155,7 +155,7 @@ if __name__ == '__main__':
                         default=1)
     
     parser.add_argument('--pretrained', type=bool,
-                        default=True)
+                        default=False)
     
     parser.add_argument('--weight_path', type=str,
                         default=None)
