@@ -4,7 +4,7 @@ import os
 import argparse
 from datetime import datetime
 from lib.HarDMSEG import HarDMSEG
-from utils.dataloader import get_loader,test_dataset
+from utils.dataloader import get_loader
 from utils.utils import clip_gradient, adjust_lr, AvgMeter
 import torch.nn.functional as F
 import numpy as np
@@ -26,19 +26,12 @@ def structure_loss(pred, mask):
 
 
 
-def test(model, path):
-    
-    ##### put ur data_path of TestDataSet/Kvasir here #####
-    data_path = path
-    #####                                             #####
-    
+def test(model, test_loader):
+    test_loader.re_init()
     model.eval()
-    image_root = '{}/images/'.format(data_path)
-    gt_root = '{}/masks/'.format(data_path)
-    test_loader = test_dataset(image_root, gt_root, 352)
     b=0.0
     for i in range(100):
-        image, gt, name = test_loader.load_data()
+        image, gt, name = next(test_loader)
         gt = np.asarray(gt, np.float32)
         gt /= (gt.max() + 1e-8)
         image = image.cuda()
@@ -67,7 +60,7 @@ def test(model, path):
 
 
 
-def train(train_loader, model, optimizer, epoch, test_path):
+def train(train_loader, model, optimizer, epoch, test_set):
     model.train()
     # ---- multi-scale training ----
     size_rates = [0.75, 1, 1.25]
@@ -149,20 +142,39 @@ if __name__ == '__main__':
                         default=50, help='every n epochs decay learning rate')
     
     parser.add_argument('--train_path', type=str,
-                        default='/work/james128333/PraNet/TrainDataset', help='path to train dataset')
+                        required=True, help='path to train dataset')
     
-    parser.add_argument('--test_path', type=str,
-                        default='/work/james128333/PraNet/TestDataset/Kvasir' , help='path to testing Kvasir dataset')
+    parser.add_argument('--test_path', type=str, default=None , help='path to testing Kvasir dataset')
     
     parser.add_argument('--train_save', type=str,
                         default='HarD-MSEG-best')
     
+    parser.add_argument('--monochrome', type=bool,
+                        default=False)
+    
+    parser.add_argument('--classes', type=int,
+                        default=1)
+    
+    parser.add_argument('--pretrained', type=bool,
+                        default=True)
+    
+    parser.add_argument('--weight_path', type=str,
+                        default=None)
+    
     opt = parser.parse_args()
+
+    if opt.monochrome:
+        from utils.dataloader import MonochromeDataset as TrainDataset, MonochromeTestDataset as TestDataset
+        in_channels = 1
+    else:
+        from utils.dataloader import PolychromeDataset as TrainDataset, PolychromeTestDataset as TestDataset
+        in_channels = 3
+    
 
     # ---- build models ----
     # torch.cuda.set_device(0)  # set your gpu device
-    model = HarDMSEG().cuda()
-
+    model = HarDMSEG(in_channels, 32, opt.classes, pretrained=opt.pretrained, weight_path=opt.weight_path).cuda()
+    #model = HarDMSEG().cuda()
     # ---- flops and params ----
     # from utils.utils import CalParams
     # x = torch.randn(1, 3, 352, 352).cuda()
@@ -176,14 +188,27 @@ if __name__ == '__main__':
         optimizer = torch.optim.SGD(params, opt.lr, weight_decay = 1e-4, momentum = 0.9)
         
     print(optimizer)
-    image_root = '{}/images/'.format(opt.train_path)
-    gt_root = '{}/masks/'.format(opt.train_path)
 
-    train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize, augmentation = opt.augmentation)
+    train_set = TrainDataset(opt.train_path, img_size=opt.trainsize, augmentations=opt.augmentation, class_channels=opt.classes)
+    train_set.add_data("img", "mask")
+
+    if opt.test_path is None:
+        test_set = TestDataset("", img_size=opt.trainsize, class_channels=opt.classes)
+
+        train_set, val_set = train_set.split_dset(0.2)
+
+        test_set.images = val_set.images
+        del val_set
+    else:
+        test_set = TestDataset(opt.test_path, img_size=opt.trainsize, class_channels=opt.classes)
+        test_set.add_data("img", "mask")
+
+
+    train_loader = get_loader(train_set, batch_size=opt.batchsize)
     total_step = len(train_loader)
 
     print("#"*20, "Start Training", "#"*20)
 
     for epoch in range(1, opt.epoch):
         adjust_lr(optimizer, opt.lr, epoch, 0.1, 200)
-        train(train_loader, model, optimizer, epoch, opt.test_path)
+        train(train_loader, model, optimizer, epoch, test_set)
