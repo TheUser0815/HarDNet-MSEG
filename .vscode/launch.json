@@ -1,0 +1,34 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Train",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/Train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--train_path",
+                "/home/thomas/Pictures/unzipped/modified/traingdata/augmented",
+                "--monochrome",
+                "true",
+                "--classes",
+                "2",
+                "--trainsize", 
+                "256",
+                "--weight_path",
+                "/home/thomas/Documents/Bachelor/Network/HarDNet-MSEG/modified_pretrained/hardnet68_c123.pth"
+            ]
+        }
+    ]
+}
