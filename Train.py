@@ -13,7 +13,9 @@ from torchstat import stat
 
 def structure_loss(pred, mask):
     
-    weit = 1 + 5*torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
+    pooled = F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15)
+
+    weit = 1 + 5*torch.abs(pooled - mask)
     wbce = F.binary_cross_entropy_with_logits(pred, mask, reduce='none')
     wbce = (weit*wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
 
@@ -37,7 +39,7 @@ def test(model, test_loader):
         image = image.cuda()
         
         res  = model(image)
-        res = F.upsample(res, size=gt.shape, mode='bilinear', align_corners=False)
+        res = F.interpolate(res, size=gt.shape[2:], mode='bilinear', align_corners=False)
         res = res.sigmoid().data.cpu().numpy().squeeze()
         res = (res - res.min()) / (res.max() - res.min() + 1e-8)
         
