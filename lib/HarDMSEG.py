@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .hardnet_68 import hardnet
+from .hardnet_68 import hardnet, HarDNet
 
 
 class BasicConv2d(nn.Module):
@@ -66,21 +66,21 @@ class RFB_modified(nn.Module):
 class aggregation(nn.Module):
     # dense aggregation, it can be replaced by other aggregation previous, such as DSS, amulet, and so on.
     # used after MSF
-    def __init__(self, channel):
+    def __init__(self, in_channels, out_channels):
         super(aggregation, self).__init__()
         self.relu = nn.ReLU(True)
 
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv_upsample1 = BasicConv2d(channel, channel, 3, padding=1)
-        self.conv_upsample2 = BasicConv2d(channel, channel, 3, padding=1)
-        self.conv_upsample3 = BasicConv2d(channel, channel, 3, padding=1)
-        self.conv_upsample4 = BasicConv2d(channel, channel, 3, padding=1)
-        self.conv_upsample5 = BasicConv2d(2*channel, 2*channel, 3, padding=1)
+        self.conv_upsample1 = BasicConv2d(in_channels, in_channels, 3, padding=1)
+        self.conv_upsample2 = BasicConv2d(in_channels, in_channels, 3, padding=1)
+        self.conv_upsample3 = BasicConv2d(in_channels, in_channels, 3, padding=1)
+        self.conv_upsample4 = BasicConv2d(in_channels, in_channels, 3, padding=1)
+        self.conv_upsample5 = BasicConv2d(2*in_channels, 2*in_channels, 3, padding=1)
 
-        self.conv_concat2 = BasicConv2d(2*channel, 2*channel, 3, padding=1)
-        self.conv_concat3 = BasicConv2d(3*channel, 3*channel, 3, padding=1)
-        self.conv4 = BasicConv2d(3*channel, 3*channel, 3, padding=1)
-        self.conv5 = nn.Conv2d(3*channel, 1, 1)
+        self.conv_concat2 = BasicConv2d(2*in_channels, 2*in_channels, 3, padding=1)
+        self.conv_concat3 = BasicConv2d(3*in_channels, 3*in_channels, 3, padding=1)
+        self.conv4 = BasicConv2d(3*in_channels, 3*in_channels, 3, padding=1)
+        self.conv5 = nn.Conv2d(3*in_channels, out_channels, 1)
 
     def forward(self, x1, x2, x3):
         x1_1 = x1
@@ -102,7 +102,7 @@ class aggregation(nn.Module):
 
 class HarDMSEG(nn.Module):
     # res2net based encoder decoder
-    def __init__(self, channel=32):
+    def __init__(self, in_channels=3, channel=32, out_channels=1, pretrained=True, weight_path=None):
         super(HarDMSEG, self).__init__()
         # ---- ResNet Backbone ----
         #self.resnet = res2net50_v1b_26w_4s(pretrained=True)
@@ -114,7 +114,7 @@ class HarDMSEG(nn.Module):
         self.rfb4_1 = RFB_modified(1024, channel)
         # ---- Partial Decoder ----
         #self.agg1 = aggregation(channel)
-        self.agg1 = aggregation(32)
+        self.agg1 = aggregation(channel, out_channels)
         # ---- reverse attention branch 4 ----
         self.ra4_conv1 = BasicConv2d(1024, 256, kernel_size=1)
         self.ra4_conv2 = BasicConv2d(256, 256, kernel_size=5, padding=2)
@@ -137,7 +137,24 @@ class HarDMSEG(nn.Module):
         self.conv5 = BasicConv2d(1024, 1024, 3, padding=1)
         self.conv6 = nn.Conv2d(1024, 1, 1)
         self.upsample = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
-        self.hardnet = hardnet(arch=68)
+
+        if pretrained:
+            if weight_path is not None:
+                self.hardnet = HarDNet(in_channels=in_channels, arch=68)
+                weights = torch.load(weight_path)
+                self.load_state_dict(weights)
+            else:
+                self.hardnet = hardnet(arch=68)
+        else:
+            if weight_path is not None:
+                self.hardnet = HarDNet(in_channels=in_channels, arch=68, weight_path=weight_path)
+            else:
+                self.hardnet = HarDNet(in_channels=in_channels, arch=68)
+
+        if out_channels > 1:
+            self.post_process = nn.Softmax(dim=1)
+        else:
+            self.post_process = nn.Identity()
         
     def forward(self, x):
         #print("input",x.size())
@@ -156,6 +173,8 @@ class HarDMSEG(nn.Module):
         ra5_feat = self.agg1(x4_rfb, x3_rfb, x2_rfb)
         
         lateral_map_5 = F.interpolate(ra5_feat, scale_factor=8, mode='bilinear')    # NOTES: Sup-1 (bs, 1, 44, 44) -> (bs, 1, 352, 352)
+
+        lateral_map_5 = self.post_process(lateral_map_5)
 
         return lateral_map_5 #, lateral_map_4, lateral_map_3, lateral_map_2
 
