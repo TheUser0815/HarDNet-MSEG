@@ -70,6 +70,8 @@ class DSet(data.Dataset, FileCollector, ImageLoader):
         else:
             self.mask_loader = self.__get_monochannel_mask()
 
+        self.re_init()
+
     def __get_multichannel_mask(self):
         if self.channel_wise_mask:
             def get_mask(img_data, seed):
@@ -130,13 +132,34 @@ class DSet(data.Dataset, FileCollector, ImageLoader):
 
         mask = self.mask_loader(img_data, seed)
 
-        return image, mask
+        name = os.path.join(img_data[0], img_data[2]).replace("/", "_")
+
+        return image, mask, name
+
+    def next(self):
+        image, mask, name = self.getitem(self.index)
+
+        self.index += 1
+
+        return image, mask, name
+
+    def __next__(self):
+        return self.next()
+
+    def __iter__(self):
+        self.re_init()
+        return self
 
     def __getitem__(self, index):
         return self.getitem(index)
 
     def __len__(self):
         return self.size
+
+    def re_init(self):
+        self.size = len(self.images)
+        self.index = 0
+        np.random.shuffle(self.images)
 
     def copy(self):
         cpy = DSet(self.base_dir, self.img_size, self.class_channels, self.channel_wise_mask)
@@ -163,128 +186,84 @@ class DSet(data.Dataset, FileCollector, ImageLoader):
 
 
 class TrainDataset(DSet):
-    def __init__(self, base_dir, img_size, augmentations, class_channels, channel_wise_mask):
+    def __init__(self, base_dir, img_size, augmentations, class_channels, channel_wise_mask, mask_size):
         super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
 
+        transformations = []
         if augmentations:
             print('Using RandomRotation, RandomFlip')
-            self.transform = transforms.Compose([
+            transformations = [
                 transforms.RandomRotation(90, resample=False, expand=False, center=None, fill=None),
                 transforms.RandomVerticalFlip(p=0.5),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.Resize((self.img_size, self.img_size)),
-                transforms.ToTensor()])
-            def transformer(x, seed):
-                random.seed(seed) # apply this seed to img tranfsorms
-                torch.manual_seed(seed) # needed for torchvision 0.7
-                return self.transform(x)
-            self.transformer = transformer
+                transforms.RandomHorizontalFlip(p=0.5)
+            ]
+            def transformer_creator(transform_actions):
+                def transformer_function(x, seed):
+                    random.seed(seed) # apply this seed to img tranfsorms
+                    torch.manual_seed(seed) # needed for torchvision 0.7
+                    return transform_actions(x)
+                return transformer_function
         else:
             print('no augmentation')
-            self.transform = transforms.Compose([
+            transformer_creator = lambda transform_actions: lambda x, seed: transform_actions(x)
+
+
+        self.transform = transforms.Compose(
+            transformations + 
+            [
                 transforms.Resize((self.img_size, self.img_size)),
-                transforms.ToTensor()])
-            self.transformer = lambda x, seed: self.transform(x)
+                transforms.ToTensor()
+            ]
+        )
+        self.transformer = transformer_creator(self.transform)
         
-        self.mask_transformer = self.transformer
+        if mask_size is None:
+            self.mask_transformer = self.transformer
+        else:
+            self.mask_transform = transforms.Compose(
+                transformations + 
+                [
+                    transforms.Resize((mask_size, mask_size)),
+                    transforms.ToTensor()
+                ]
+            )
+            self.mask_transformer = transformer_creator(self.mask_transform)
+        
 
 
 class MonochromeDataset(TrainDataset):
-    def __init__(self, base_dir, img_size, augmentations=True, class_channels=1, channel_wise_mask=True):
-        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask)
-        self.image_loader = super().binary_loader
+    def __init__(self, base_dir, img_size, augmentations=False, class_channels=1, channel_wise_mask=True, mask_size=None):
+        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask, mask_size)
+        self.image_loader = self.binary_loader
+
+    def __next__(self):
+        return self.next()
+
+    def __iter__(self):
+        self.re_init()
+        return self
 
     def __getitem__(self, index):
-        return super().getitem(index)
+        return self.getitem(index)
 
     def __len__(self):
         return self.size
     
 
 class PolychromeDataset(TrainDataset):
-    def __init__(self, base_dir, img_size, augmentations=True, class_channels=1, channel_wise_mask=True):
-        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask)
-        self.image_loader = super().rgb_loader
-
-    def __getitem__(self, index):
-        return super().getitem(index)
-
-    def __len__(self):
-        return self.size
-
-
-
-class TestDataset(DSet):
-    def __init__(self, base_dir, img_size, class_channels, channel_wise_mask):
-        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((self.img_size, self.img_size)),
-            transforms.ToTensor()])
-
-        self.transformer = lambda x, seed: self.transform(x)
-
-        self.mask_transform = transforms.ToTensor()
-
-        self.mask_transformer = lambda x, seed: self.mask_transform(x)
-
-        self.re_init()
-
-    def re_init(self):
-        self.size = len(self.images)
-        self.index = 0
-        np.random.shuffle(self.images)
-
-    def indexed_next(self, index):
-        img_data = self.images[self.index]
-
-        image, mask = super().getitem(self.index)
-
-        name = os.path.join(img_data[0], img_data[2]).replace("/", "_")
-
-        return image, mask, name
-
-    def next(self):
-        image, mask, name = self.indexed_next(self.index)
-
-        self.index += 1
-
-        return image, mask, name
-
-
-class MonochromeTestDataset(TestDataset):
-    def __init__(self, base_dir, img_size, class_channels=1, channel_wise_mask=True):
-        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
-        self.image_loader = super().binary_loader
+    def __init__(self, base_dir, img_size, augmentations=False, class_channels=1, channel_wise_mask=True, mask_size=None):
+        super().__init__(base_dir, img_size, augmentations, class_channels, channel_wise_mask, mask_size)
+        self.image_loader = self.rgb_loader
 
     def __next__(self):
-        return super().next()
+        return self.next()
 
     def __iter__(self):
         self.re_init()
         return self
 
     def __getitem__(self, index):
-        return super().indexed_next(index)
-
-    def __len__(self):
-        return self.size
-
-
-class PolychromeTestDataset(TestDataset):
-    def __init__(self, base_dir, img_size, class_channels=1, channel_wise_mask=True):
-        super().__init__(base_dir, img_size, class_channels, channel_wise_mask)
-        self.image_loader = super().rgb_loader
-
-    def __next__(self):
-        return super().next()
-
-    def __iter__(self):
-        self.re_init()
-        return self
-
-    def __getitem__(self, index):
-        return super().indexed_next(index)
+        return self.getitem(index)
 
     def __len__(self):
         return self.size
